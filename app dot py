@@ -1,0 +1,122 @@
+import json
+import os
+from pathlib import Path
+
+import streamlit as st
+from google import genai
+
+st.set_page_config(page_title="Jeet Assistant", page_icon="💖", layout="centered")
+
+st.title("Jeet Assistant 💖")
+st.caption("Your friendly personal AI assistant")
+
+DATA_DIR = Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+HISTORY_FILE = DATA_DIR / "chat_history.json"
+MEMORY_FILE = DATA_DIR / "memory.json"
+
+
+def load_json(path, default):
+    try:
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        pass
+    return default
+
+
+def save_json(path, data):
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# API key can be supplied through Streamlit Secrets or entered in the app.
+secret_key = ""
+try:
+    secret_key = st.secrets.get("GEMINI_API_KEY", "")
+except Exception:
+    pass
+
+api_key = st.text_input(
+    "Gemini API key",
+    value=secret_key,
+    type="password",
+    help="Apni Gemini API key yahan dalo. Ise kisi ke saath share mat karna.",
+)
+
+if "messages" not in st.session_state:
+    st.session_state.messages = load_json(HISTORY_FILE, [])
+
+if "memory" not in st.session_state:
+    st.session_state.memory = load_json(MEMORY_FILE, [])
+
+with st.expander("🧠 Personal memory", expanded=False):
+    st.write("Yahan likhi baatein is app ki memory file mein save hongi.")
+    memory_text = st.text_area(
+        "Mujhe kya yaad rakhna chahiye?",
+        value="\n".join(st.session_state.memory),
+        height=120,
+        placeholder="Jaise: Mujhe Hindi mein jawab pasand hain.",
+    )
+    if st.button("Save memory"):
+        st.session_state.memory = [
+            line.strip() for line in memory_text.splitlines() if line.strip()
+        ]
+        save_json(MEMORY_FILE, st.session_state.memory)
+        st.success("Memory save ho gayi.")
+
+for message in st.session_state.messages:
+    with st.chat_message(message.get("role", "assistant")):
+        st.markdown(message.get("content", ""))
+
+if prompt := st.chat_input("Jeet, yahan message likho..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    if not api_key:
+        answer = "Pehle upar apni Gemini API key dalo, phir main jawab de paunga."
+    else:
+        try:
+            client = genai.Client(api_key=api_key)
+            memory_notes = "\n".join(st.session_state.memory) or "Abhi koi saved memory nahi."
+            recent_messages = st.session_state.messages[-20:]
+            conversation = "\n".join(
+                f"{'User' if item['role'] == 'user' else 'Assistant'}: {item['content']}"
+                for item in recent_messages
+            )
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=(
+                    "You are Jeet's friendly personal AI assistant. "
+                    "Reply naturally in the language Jeet uses, especially Hindi/Hinglish. "
+                    "Be patient, clear, and helpful. Do not claim to remember chats "
+                    "that are not included below.\n\n"
+                    f"Saved personal memory:\n{memory_notes}\n\n"
+                    f"Recent conversation:\n{conversation}\n\n"
+                    f"Respond to the latest user message: {prompt}"
+                ),
+            )
+            answer = response.text or "Maaf karna, is baar jawab nahi aa paya. Dobara try karo."
+        except Exception as exc:
+            answer = (
+                "AI se connect nahi ho paya. API key aur internet connection check karo. "
+                f"Technical detail: {exc}"
+            )
+
+    with st.chat_message("assistant"):
+        st.markdown(answer)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
+    save_json(HISTORY_FILE, st.session_state.messages)
+
+if st.button("🗑️ Clear chat history"):
+    st.session_state.messages = []
+    save_json(HISTORY_FILE, [])
+    st.rerun()
+
+st.caption(
+    "Note: Chat history and memory are stored in this app's files. "
+    "They do not automatically import your old ChatGPT conversations."
+)
